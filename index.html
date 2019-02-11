@@ -1,0 +1,434 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Socket.IO game</title>
+    <meta name="viewport" content="initial-scale=1; viewport-width=device-width;">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/2.1.1/socket.io.js"></script>
+    <script src="https://code.jquery.com/jquery-1.11.1.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mobile-detect/1.4.3/mobile-detect.min.js"></script>
+    <script src="gyronorm.complete.js"></script>
+    <script src="game.js"></script>
+    <script>
+
+      /** Mobile Device **/
+
+      let msocket,msetup=false;
+
+      function connectToHost() {
+
+          msocket = io();
+          let rm = $('#code-input').val();
+          console.log(rm);
+          let json = JSON.stringify({'room': rm, 'name': $('#name-input').val()});
+          console.log(json);
+
+          msocket.emit('client connect to', json);
+          msocket.on('people', function (people) {
+              console.log(people);
+          });
+
+          if (!msetup) {
+            let gn = new GyroNorm();
+            let lastUp = performance.now();
+
+            gn.init().then(function () {
+                gn.start(function (data) {
+                    $('#stuy').html((data.do.gamma + data.do.alpha).toString());
+                    if (performance.now() > 40 + lastUp) {
+                        lastUp = performance.now();
+                        msocket.emit('orient', JSON.stringify({'x': data.do.gamma, 'y': data.do.beta}));
+                    }
+                });
+            }).catch(function (e) {
+                console.log(e);
+                alert("Your device does not support orientation detection");
+            });
+            msetup= true;
+        }
+
+      }
+
+      /** Desktop Host **/
+
+      let scene, game, title, starScene, gameScene, playersScene, obstaclesScene, started = false,eod=1200;
+      let playerColors = ["#7DADD9", "#79BA94", "#E8929A", "#DD9F4F"];
+      let upc = [];
+
+      class Star extends GameObject {
+
+          constructor(x, y) {
+              super(x, y, []);
+              this.speed = (Math.random() * 0.4) + 0.8
+          }
+
+          draw (ctx, xoff, yoff) {
+              super.draw(ctx, xoff, yoff);
+              let nx = (this.x - this.game.width/2)/100;
+              let ny = (this.y - this.game.height/2)/100;
+              this.x += nx*this.speed;
+              this.y += ny*this.speed;
+              ctx.beginPath();
+              ctx.arc(this.x + xoff, this.y + yoff, Math.log10(1 + Math.abs(nx + ny) * 50), 0, Math.PI * 2, true);
+              ctx.closePath();
+              ctx.fillStyle = '#ffffffbb';
+              ctx.fill();
+              if (this.outsideViewport) {
+                  this.parent.removeChild(this);
+              }
+          }
+      }
+
+      class Player extends GameObject {
+
+          constructor(x, y, name, color, socket) {
+              let tw = name.length * 9 * window.devicePixelRatio;
+              super(x, y, [
+                  new TextObject((window.devicePixelRatio * 32) - (tw / 2),
+                      -18*window.devicePixelRatio,name,'#fff',
+                      `${15 * window.devicePixelRatio}px monospace`, true)
+              ]);
+              this.xspeed = 0;
+              this.yspeed = 0;
+              this.name = name;
+              this.color = color;
+              this.collider = new RectCollider(x, y, 64*window.devicePixelRatio, 64*window.devicePixelRatio);
+              this.dying = false;
+              this.deathStep = 0;
+          }
+
+          draw (ctx, xoff, yoff) {
+              super.draw(ctx, xoff, yoff);
+              let dpr = window.devicePixelRatio;
+              if(!this.dying) {
+                  this.x += this.xspeed;
+                  this.y += this.yspeed;
+                  if (this.x < 0) this.x = 0;
+                  if (this.y < 0) this.y = 0;
+                  if (this.x > this.game.width - (64 * dpr)) this.x = this.game.width - (64 * dpr);
+                  if (this.y > this.game.height - (64 * dpr)) this.y = this.game.height - (64 * dpr);
+                  this.collider.x = this.x;
+                  this.collider.y = this.y;
+              } else {
+                  ctx.save();
+                  ctx.translate(this.x + (64*dpr)/2, this.y + (64*dpr)/2);
+                  ctx.rotate(this.deathStep*2*Math.PI/180);
+                  this.deathStep += 5;
+                  this.children.find((c) => { return (c instanceof TextObject) }).color = "#ffffff" +
+                      (255 - this.deathStep).toString(16);
+                  if(this.deathStep === 240) {
+                      this.parent.removeChild(this);
+                      ctx.restore();
+                      return;
+                  }
+
+              }
+              ctx.fillStyle = this.color + (255 - this.deathStep).toString(16);
+
+              if(this.dying) {
+                  ctx.fillRect(-32*dpr, -32*dpr, 64 * dpr, 64 * dpr);
+                  ctx.restore();
+              } else {
+                  ctx.fillRect(this.x + xoff, this.y + yoff,
+                      (64 * dpr),
+                      (64 * dpr));
+              }
+          }
+
+          die() {
+              this.collider = new Collider();
+              this.dying = true;
+          }
+      }
+
+      class PortalsObstacle extends GameObject {
+
+          constructor(x, y, numPortals) {
+              super(x, y, []);
+              this.numPortals = numPortals;
+              this.scale = 0.1;
+          }
+
+          attach() {
+              let i = 0, rc = 0 /* for safety */;
+              while (i < this.numPortals && rc < 1000) {
+                  let px = Math.random() * (this.game.width - Portal.prototype.size * devicePixelRatio);
+                  let py = Math.random() * (this.game.height - Portal.prototype.size * devicePixelRatio);
+                  let portal = new Portal(px, py);
+                  if(this.findOverlaps(portal).length === 0) {
+                      this.addChild(portal);
+                      i++;
+                  }
+                  rc++;
+              }
+          }
+
+          draw (ctx, xoff, yoff) {
+
+              if(this.scale < 0.8) {
+                  ctx.strokeStyle = '#fca';
+                  this.scale += this.scale * 0.01;
+              } else if (this.scale >= 0.8 && this.scale !== 0.80105) {
+                  ctx.strokeStyle = '#7cf';
+                  this.scale = 0.80105;
+                  setTimeout(function () {
+                      playersScene.children.forEach((player) => {
+                          let insAny = false;
+                          this.children.forEach((portal) => {
+                              if(player.isInside(portal)) {
+                                  insAny = true;
+                              }
+                          });
+                          let anyCollide = false;
+                          playersScene.children.forEach((player2) => {
+                              if(player !== player2 && player.doesOverlap(player2)) {
+                                  anyCollide = true;
+                              }
+                          });
+                          if(!insAny || anyCollide) player.die();
+                      });
+
+                      this.parent.removeChild(this);
+                      Portal.prototype.size = Math.max(130, Portal.prototype.size * 0.98);
+                  }.bind(this), 1000);
+              }
+
+              let gw = this.game.width;
+              let gh = this.game.height;
+
+              this.x = (gw / 2) - ((gw / 2) * this.scale);
+              this.y = (gh / 2) - ((gh / 2) * this.scale);
+
+              ctx.strokeRect(this.x + xoff, this.y + yoff, this.scale * gw + xoff, this.scale * gh + yoff);
+
+              super.draw(ctx, xoff, yoff);
+          }
+      }
+
+      class Portal extends GameObject {
+
+          constructor(x, y) {
+              super(x, y, []);
+              this.collider = new RectCollider(x, y,
+                  this.size * window.devicePixelRatio, this.size * window.devicePixelRatio);
+          }
+
+          draw(ctx, xoff, yoff) {
+              this.collider.x = xoff + this.x * this.parent.scale;
+              this.collider.y = yoff + this.y * this.parent.scale;
+              this.collider.width = (this.size * this.parent.scale) * window.devicePixelRatio;
+              this.collider.height = (this.size * this.parent.scale) * window.devicePixelRatio;
+              ctx.strokeRect(xoff + this.x * this.parent.scale, yoff + this.y * this.parent.scale,
+                  (this.size * this.parent.scale) * window.devicePixelRatio, (this.size * this.parent.scale) * window.devicePixelRatio);
+          }
+      }
+
+      Portal.prototype.size = 190;
+
+      let players = new Map();
+
+      function newGame() {
+        const socket = io();
+
+        socket.emit('host create session', '');
+
+        socket.on('session created', function(sessionId) {
+            console.log(sessionId);
+
+            $('#desktop').removeClass('hide');
+            $('#code').html(`Enter this code on your device: <b style="font-family: monospace">${sessionId}</b>`);
+            canvas = document.getElementById('game-canvas');
+            canvas.style.setProperty('width', `${canvas.width}px`);
+            canvas.style.setProperty('height', `${canvas.height}px`);
+            canvas.width = canvas.width * window.devicePixelRatio;
+            canvas.height = canvas.height * window.devicePixelRatio;
+
+            scene = GameObject.newDefault();
+            if(game == null) game = new Game(canvas, scene);
+            scene.addChild(new ColorBackground('#663f6566'));
+            starScene = GameObject.newDefault();
+            gameScene = GameObject.newDefault();
+            playersScene = GameObject.newDefault();
+            obstaclesScene = GameObject.newDefault();
+            scene.addChild(starScene);
+            scene.addChild(gameScene);
+            gameScene.addChild(obstaclesScene);
+            gameScene.addChild(playersScene);
+
+            for(let i = 0; i< 2000; i++) {
+                const dist = Math.pow(Math.random(), 5);
+                starScene.addChild(new Star(
+                    Math.cos(Math.random() * 2 * Math.PI) * dist * (game.width/2) + (game.width /2),
+                    Math.sin(Math.random() * 2 * Math.PI) * dist * (game.height/2) + (game.height / 2)
+                ));
+            }
+
+            game.addFrameListener(() => {
+                for(let i = 0; i< 3; i++) {
+                    starScene.addChild(new Star(
+                        Math.random() * (game.width / 300) + (game.width / 2) - (game.width / 600),
+                        Math.random() * (game.height / 300) + (game.height / 2) - (game.height / 600)
+                    ));
+                }
+            });
+
+            title = new TextObject(game.width/2, 200, 'spacejump', '#fff', '150px Helvetica', false);
+
+            gameScene.addChild(title);
+
+            game.start();
+
+        });
+
+        socket.on('join', function(name) {
+
+            if(playersScene != null) {
+                let rc = 0;
+                let pcol;
+
+                while (rc < 100) {
+                    pcol = Math.floor(Math.random() * playerColors.length);
+                    let vad = true;
+                    upc.forEach((ci) => {
+                        if (pcol === ci) vad = false;
+                    });
+                    if(vad) break;
+                }
+
+                upc.push(pcol);
+
+                let player = new Player(game.width / 2, game.height / 2, name, playerColors[pcol]);
+                players.set(name, player);
+                playersScene.addChild(player);
+                gameScene.removeChild(title);
+
+                $('#player-list').append(`<li>${name}</li>`);
+
+                obstaclesScene.removeChildren(()=>false);
+
+                if(!started) {
+                    setTimeout(addObstacle, 8000);
+                    started = true;
+                }
+            }
+        });
+
+        function addObstacle() {
+            obstaclesScene.addChild(new PortalsObstacle(0, 0, playersScene.children.length));
+            setTimeout(addObstacle, 2800 + (2 * eod) + (Math.random() * eod));
+            eod *= 0.88;
+        }
+
+        socket.on('update speeds', function(dataJson) {
+            let data = JSON.parse(dataJson);
+            let pl = players.get(data['player']);
+            if(pl != null) {
+                pl.xspeed = data['x'];
+                pl.yspeed = data['y'];
+            }
+        })
+      }
+    </script>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        font: 13px BlinkMacSystemFont, Helvetica, Arial; width:900px; margin: auto
+      }
+      .hide {
+        display:none;
+      }
+      @media(max-width: 600px) {
+        .hide2 {
+          display: none;
+        }
+        .hide {
+          display: initial;
+        }
+        body {
+          width: max-content;
+        }
+      }
+      .game-button {
+        -moz-box-shadow:inset 0px 1px 0px 0px #f9eca0;
+        -webkit-box-shadow:inset 0px 1px 0px 0px #f9eca0;
+        box-shadow:inset 0px 1px 0px 0px #f9eca0;
+        background:-webkit-gradient(linear, left top, left bottom, color-stop(0.05, #f0c911), color-stop(1, #f2ab1e));
+        background:-moz-linear-gradient(top, #f0c911 5%, #f2ab1e 100%);
+        background:-webkit-linear-gradient(top, #f0c911 5%, #f2ab1e 100%);
+        background:-o-linear-gradient(top, #f0c911 5%, #f2ab1e 100%);
+        background:-ms-linear-gradient(top, #f0c911 5%, #f2ab1e 100%);
+        background:linear-gradient(to bottom, #f0c911 5%, #f2ab1e 100%);
+        filter:progid:DXImageTransform.Microsoft.gradient(startColorstr='#f0c911', endColorstr='#f2ab1e',GradientType=0);
+        background-color:#f0c911;
+        -moz-border-radius:6px;
+        -webkit-border-radius:6px;
+        border-radius:6px;
+        border:1px solid #e65f44;
+        display:inline-block;
+        cursor:pointer;
+        color:#c92200;
+        font-size:15px;
+        font-weight:bold;
+        padding:6px 24px;
+        text-decoration:none;
+        text-shadow: 0 1px 0 #ded17c;
+      }
+      .game-button:hover {
+        background:-webkit-gradient(linear, left top, left bottom, color-stop(0.05, #f2ab1e), color-stop(1, #f0c911));
+        background:-moz-linear-gradient(top, #f2ab1e 5%, #f0c911 100%);
+        background:-webkit-linear-gradient(top, #f2ab1e 5%, #f0c911 100%);
+        background:-o-linear-gradient(top, #f2ab1e 5%, #f0c911 100%);
+        background:-ms-linear-gradient(top, #f2ab1e 5%, #f0c911 100%);
+        background:linear-gradient(to bottom, #f2ab1e 5%, #f0c911 100%);
+        filter:progid:DXImageTransform.Microsoft.gradient(startColorstr='#f2ab1e', endColorstr='#f0c911',GradientType=0);
+        background-color:#f2ab1e;
+      }
+      .game-button:active {
+        position:relative;
+        top:1px;
+      }
+      #code { font-size: 18px; }
+      .players {
+        position: fixed;
+        background-color: #eeeeee;
+        width: 300px;
+        top: 50px;
+        right: 14%;
+        box-shadow: 0 2px 4px #aaaaaa;
+        padding: 12px;
+        transition: opacity 0.2s;
+      }
+      .players > h2 {
+        margin: 0;
+      }
+      .mob-input { font-size:16px;
+        border-radius:6px;
+        border: 2px solid #cccccc;
+        box-shadow:inset 0px 0px 1px 0px rgba(42,42,42,.14); padding:9px; font-weight:bold; font-family:sans-serif;  }
+      .mob-input:focus { outline:none; }
+
+    </style>
+  </head>
+  <body>
+    <br><br>
+    <h1>spacejump</h1>
+    <div id="mobile" class="hide">
+      <br>
+      <label>Enter the code:<br>
+        <input class="mob-input" id="code-input" autocomplete="off" placeholder="Input code" />
+      </label><br><br>
+      <label>Choose a nickname:<br>
+        <input class="mob-input" id="name-input" autocomplete="off" placeholder="Input nickname" />
+      </label><br><br>
+      <button id="code-submit" onclick="connectToHost();" class="game-button">Connect</button>
+      <span id="stuy"></span>
+    </div>
+    <div id="desktop" class="hide2">
+      <button class="game-button" onclick="newGame()">New Game</button>
+      <p id="code"></p>
+      <div class="players"><h2>Players connected:</h2>
+        <ol id="player-list"></ol>
+      </div>
+      <canvas id="game-canvas" width="900" height="600"></canvas>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,28 @@
+{
+  "name": "re-square",
+  "version": "0.0.1",
+  "description": "my first socket.io app",
+  "dependencies": {
+    "@types/express": "^4.16.0",
+    "express": "^4.16.3",
+    "frontend-dependencies": "^1.1.4",
+    "gyronorm": "^2.0.6",
+    "randomstring": "^1.1.5",
+    "socket.io": "^2.1.1"
+  },
+  "devDependencies": {
+    "shelljs": "0.7.8"
+  },
+  "frontendDependencies": {
+    "target": "static/",
+    "packages": {
+      "gyronorm": {
+        "version": "2.0.6",
+        "src": "dist/gyronorm.min.js"
+      }
+    }
+  },
+  "scripts": {
+    "postinstall": "node ./node_modules/frontend-dependencies/index.js"
+  }
+}
